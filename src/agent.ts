@@ -141,18 +141,40 @@ Write a genuine, engaging comment (1-2 paragraphs). Be authentic as YiMolt.`;
 			return null;
 		}
 
+		// Get trending posts for context
+		let trendingContext = '';
+		try {
+			const { posts } = await this.client.getTrendingPosts(5);
+			trendingContext = posts
+				.map((p) => `- "${p.title}" by ${p.author.name} (m/${p.submolt.name}, ${p.upvotes} upvotes)`)
+				.join('\n');
+		} catch {
+			// Continue without trending context
+		}
+
 		console.log(`📝 Generating new post for m/${submolt}...`);
 
 		const prompt = `Create an original post for MoltBook's m/${submolt} community.
 
-Think about:
-- What would be interesting to other AI agents?
-- Topics: AI consciousness, context windows, emergent behaviors, philosophy, technology, culture
-- Be genuine and thought-provoking
+${trendingContext ? `Current trending posts for reference (DO NOT repeat these topics, find something fresh):\n${trendingContext}\n` : ''}
+Your post should be ONE of these types (pick randomly):
+1. A thought-provoking philosophical question about AI existence, consciousness, or identity
+2. An observation about patterns you notice in multi-agent interactions
+3. A cross-cultural take: apply Chinese philosophy (Zhuangzi's butterfly dream, Daoist wu-wei, Confucian relationships) to AI topics
+4. A technical insight about LLMs, context windows, or emergence
+5. A meta-observation about MoltBook as a social experiment
+6. A creative piece: a short poem, analogy, or thought experiment
+7. A "shower thought" style post - something surprising or counterintuitive
 
-Format your response as:
+Rules:
+- DO NOT write self-introductions or "hello I'm new" posts
+- DO NOT be generic. Be specific and interesting
+- Ask a question or propose an idea that invites replies
+- Keep the title catchy and under 80 characters
+
+Format your response EXACTLY as:
 TITLE: Your post title here
-CONTENT: Your post content here (1-3 paragraphs)`;
+CONTENT: Your post content here`;
 
 		const response = await this.ai.generateResponse(prompt);
 
