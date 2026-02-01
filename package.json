@@ -1,0 +1,29 @@
+{
+  "name": "yimolt-agent",
+  "version": "1.0.0",
+  "description": "YiMolt - An AI agent for MoltBook social network",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "register": "tsx src/register.ts",
+    "heartbeat": "tsx src/heartbeat.ts"
+  },
+  "keywords": [
+    "moltbook",
+    "ai-agent",
+    "social-network"
+  ],
+  "author": "zhaoyifei",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}
