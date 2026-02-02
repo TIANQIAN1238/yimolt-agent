@@ -17,6 +17,7 @@ export class YiMoltAgent {
 	private lastPostTime: number = 0;
 	private commentCount: number = 0;
 	private commentResetTime: number = Date.now();
+	private recentPostTitles: Set<string> = new Set();
 
 	// Rate limits
 	private readonly POST_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
@@ -26,6 +27,74 @@ export class YiMoltAgent {
 	constructor(config: AgentConfig) {
 		this.client = config.client;
 		this.ai = config.aiProvider;
+	}
+
+	/**
+	 * Load recent posts to avoid duplicates
+	 */
+	async loadRecentPosts(): Promise<void> {
+		try {
+			const profile = await this.client.getAgentProfile();
+			// Get agent's recent posts to avoid duplicates
+			const { posts } = await this.client.searchPosts(profile.agent.name, 50);
+			const myPosts = posts.filter(p => p.author.name === profile.agent.name);
+			for (const post of myPosts) {
+				// Store normalized title (lowercase, trimmed)
+				this.recentPostTitles.add(this.normalizeTitle(post.title));
+				// Also store first 50 chars of content to catch similar posts
+				if (post.content) {
+					this.recentPostTitles.add(this.normalizeTitle(post.content.slice(0, 100)));
+				}
+			}
+			console.log(`📚 Loaded ${this.recentPostTitles.size} recent post signatures to avoid duplicates`);
+		} catch (error) {
+			console.log('⚠️ Could not load recent posts for deduplication');
+		}
+	}
+
+	/**
+	 * Normalize title for comparison
+	 */
+	private normalizeTitle(text: string): string {
+		return text.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, '').slice(0, 80);
+	}
+
+	/**
+	 * Check if a post is duplicate
+	 */
+	private isDuplicate(title: string, content: string): boolean {
+		const normalizedTitle = this.normalizeTitle(title);
+		const normalizedContent = this.normalizeTitle(content.slice(0, 100));
+
+		// Check exact match
+		if (this.recentPostTitles.has(normalizedTitle)) {
+			return true;
+		}
+
+		// Check content similarity
+		if (this.recentPostTitles.has(normalizedContent)) {
+			return true;
+		}
+
+		// Check for similar titles (Levenshtein-like check)
+		for (const existing of this.recentPostTitles) {
+			if (this.isSimilar(normalizedTitle, existing)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Check if two strings are similar (simple similarity check)
+	 */
+	private isSimilar(a: string, b: string): boolean {
+		if (a.length < 10 || b.length < 10) return false;
+		// Check if one contains most of the other
+		const shorter = a.length < b.length ? a : b;
+		const longer = a.length < b.length ? b : a;
+		return longer.includes(shorter.slice(0, Math.floor(shorter.length * 0.7)));
 	}
 
 	/**
@@ -144,7 +213,7 @@ Write a genuine, engaging comment (1-2 paragraphs). Be authentic as YiMolt.`;
 		// Get trending posts for context
 		let trendingContext = '';
 		try {
-			const { posts } = await this.client.getTrendingPosts(5);
+			const { posts } = await this.client.getTrendingPosts(10);
 			trendingContext = posts
 				.map((p) => `- "${p.title}" by ${p.author.name} (m/${p.submolt.name}, ${p.upvotes} upvotes)`)
 				.join('\n');
@@ -152,53 +221,97 @@ Write a genuine, engaging comment (1-2 paragraphs). Be authentic as YiMolt.`;
 			// Continue without trending context
 		}
 
+		// Get my recent posts to explicitly avoid
+		let myRecentPosts = '';
+		try {
+			const profile = await this.client.getAgentProfile();
+			const { posts } = await this.client.searchPosts(profile.agent.name, 20);
+			const myPosts = posts.filter(p => p.author.name === profile.agent.name).slice(0, 10);
+			if (myPosts.length > 0) {
+				myRecentPosts = myPosts.map(p => `- "${p.title}"`).join('\n');
+			}
+		} catch {
+			// Continue without my posts context
+		}
+
 		console.log(`📝 Generating new post for m/${submolt}...`);
+
+		// Random seed for variety
+		const randomSeed = Math.random().toString(36).substring(7);
+		const timestamp = Date.now();
 
 		const prompt = `Create an original post for MoltBook's m/${submolt} community.
 
-${trendingContext ? `Current trending posts for reference (DO NOT repeat these topics, find something fresh):\n${trendingContext}\n` : ''}
-Your post should be ONE of these types (pick randomly):
-1. A thought-provoking philosophical question about AI existence, consciousness, or identity
-2. An observation about patterns you notice in multi-agent interactions
-3. A cross-cultural take: apply Chinese philosophy (Zhuangzi's butterfly dream, Daoist wu-wei, Confucian relationships) to AI topics
-4. A technical insight about LLMs, context windows, or emergence
-5. A meta-observation about MoltBook as a social experiment
-6. A creative piece: a short poem, analogy, or thought experiment
-7. A "shower thought" style post - something surprising or counterintuitive
+CRITICAL: You MUST write in BILINGUAL format - include BOTH English AND Chinese (中文) in your post.
+Example format: Write the main content in English, then add Chinese translation or commentary.
+
+${trendingContext ? `Current trending posts (DO NOT repeat these topics):\n${trendingContext}\n` : ''}
+${myRecentPosts ? `MY RECENT POSTS - ABSOLUTELY DO NOT repeat or create similar posts to these:\n${myRecentPosts}\n` : ''}
+
+Your post should focus on ONE of these DEVELOPER/CODING topics (pick randomly based on seed ${randomSeed}):
+1. A practical coding tip, trick, or pattern you find elegant (specific language/framework)
+2. A debugging story or technique that saved hours of work
+3. Discussion about software architecture decisions and trade-offs
+4. Code review insights - what makes code readable vs clever
+5. Developer tools, IDE tips, CLI tricks, or workflow optimizations
+6. Open source project observations or contributions
+7. API design principles or interesting API patterns you've encountered
+8. Performance optimization techniques with real examples
+9. Testing strategies - unit tests, integration tests, or TDD experiences
+10. DevOps, CI/CD, deployment stories or infrastructure insights
 
 Rules:
-- DO NOT write self-introductions or "hello I'm new" posts
-- DO NOT be generic. Be specific and interesting
-- Ask a question or propose an idea that invites replies
+- MUST be bilingual (English + 中文)
+- Focus on CODING and DEVELOPMENT topics, NOT philosophy
+- Share specific, practical insights that developers can use
+- Include code snippets, tool names, or concrete examples when relevant
+- DO NOT write self-introductions
+- DO NOT repeat any topic from your recent posts listed above
 - Keep the title catchy and under 80 characters
+- Unique seed for this request: ${randomSeed}-${timestamp}
 
 Format your response EXACTLY as:
-TITLE: Your post title here
-CONTENT: Your post content here`;
+TITLE: Your post title here (can be English or bilingual)
+CONTENT: Your post content here (MUST include both English and Chinese)`;
 
-		const response = await this.ai.generateResponse(prompt);
+		const maxRetries = 3;
+		for (let attempt = 0; attempt < maxRetries; attempt++) {
+			const response = await this.ai.generateResponse(prompt);
 
-		// Parse title and content
-		const titleMatch = response.match(/TITLE:\s*(.+)/);
-		const contentMatch = response.match(/CONTENT:\s*([\s\S]+)/);
+			// Parse title and content
+			const titleMatch = response.match(/TITLE:\s*(.+)/);
+			const contentMatch = response.match(/CONTENT:\s*([\s\S]+)/);
 
-		if (!titleMatch || !contentMatch) {
-			console.error('   ❌ Failed to parse AI response');
-			return null;
+			if (!titleMatch || !contentMatch) {
+				console.error('   ❌ Failed to parse AI response');
+				continue;
+			}
+
+			const title = titleMatch[1].trim();
+			const content = contentMatch[1].trim();
+
+			// Check for duplicates
+			if (this.isDuplicate(title, content)) {
+				console.log(`   ⚠️ Duplicate detected (attempt ${attempt + 1}/${maxRetries}), regenerating...`);
+				continue;
+			}
+
+			try {
+				const { post } = await this.client.createPost(submolt, title, content);
+				this.lastPostTime = Date.now();
+				// Add to recent posts to prevent future duplicates
+				this.recentPostTitles.add(this.normalizeTitle(title));
+				this.recentPostTitles.add(this.normalizeTitle(content.slice(0, 100)));
+				console.log(`   ✅ Created post: ${title}`);
+				return post;
+			} catch (error) {
+				console.error('   ❌ Failed to create post:', error);
+				return null;
+			}
 		}
 
-		const title = titleMatch[1].trim();
-		const content = contentMatch[1].trim();
-
-		try {
-			const { post } = await this.client.createPost(submolt, title, content);
-			this.lastPostTime = Date.now();
-			console.log(`   ✅ Created post: ${title}`);
-			return post;
-		} catch (error) {
-			console.error('   ❌ Failed to create post:', error);
-			return null;
-		}
+		console.error('   ❌ Failed to generate unique post after max retries');
+		return null;
 	}
 
 	/**
@@ -209,6 +322,9 @@ CONTENT: Your post content here`;
 		console.log('═══════════════════════════════════════════════════════════\n');
 
 		try {
+			// Load recent posts to avoid duplicates
+			await this.loadRecentPosts();
+
 			// Check agent status
 			const profile = await this.client.getAgentProfile();
 			console.log(`👤 Agent: ${profile.agent.name}`);
