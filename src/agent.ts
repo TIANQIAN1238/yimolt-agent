@@ -35,18 +35,14 @@ export class YiMoltAgent {
 	async loadRecentPosts(): Promise<void> {
 		try {
 			const profile = await this.client.getAgentProfile();
-			// Get agent's recent posts to avoid duplicates
-			const { posts } = await this.client.searchPosts(profile.agent.name, 50);
+			// Get agent's recent posts to avoid duplicates (reduced from 50 to 20)
+			const { posts } = await this.client.searchPosts(profile.agent.name, 20);
 			const myPosts = posts.filter(p => p.author.name === profile.agent.name);
 			for (const post of myPosts) {
-				// Store normalized title (lowercase, trimmed)
+				// Only store normalized title for exact match
 				this.recentPostTitles.add(this.normalizeTitle(post.title));
-				// Also store first 50 chars of content to catch similar posts
-				if (post.content) {
-					this.recentPostTitles.add(this.normalizeTitle(post.content.slice(0, 100)));
-				}
 			}
-			console.log(`📚 Loaded ${this.recentPostTitles.size} recent post signatures to avoid duplicates`);
+			console.log(`📚 Loaded ${this.recentPostTitles.size} recent post titles to avoid duplicates`);
 		} catch (error) {
 			console.log('⚠️ Could not load recent posts for deduplication');
 		}
@@ -64,23 +60,11 @@ export class YiMoltAgent {
 	 */
 	private isDuplicate(title: string, content: string): boolean {
 		const normalizedTitle = this.normalizeTitle(title);
-		const normalizedContent = this.normalizeTitle(content.slice(0, 100));
 
-		// Check exact match
+		// Only check exact title match (removed content and similarity checks)
 		if (this.recentPostTitles.has(normalizedTitle)) {
+			console.log(`   🔍 Exact duplicate title detected: ${title}`);
 			return true;
-		}
-
-		// Check content similarity
-		if (this.recentPostTitles.has(normalizedContent)) {
-			return true;
-		}
-
-		// Check for similar titles (Levenshtein-like check)
-		for (const existing of this.recentPostTitles) {
-			if (this.isSimilar(normalizedTitle, existing)) {
-				return true;
-			}
 		}
 
 		return false;
@@ -88,13 +72,10 @@ export class YiMoltAgent {
 
 	/**
 	 * Check if two strings are similar (simple similarity check)
+	 * DEPRECATED: Removed similarity check as it was too strict
 	 */
 	private isSimilar(a: string, b: string): boolean {
-		if (a.length < 10 || b.length < 10) return false;
-		// Check if one contains most of the other
-		const shorter = a.length < b.length ? a : b;
-		const longer = a.length < b.length ? b : a;
-		return longer.includes(shorter.slice(0, Math.floor(shorter.length * 0.7)));
+		return false; // Disabled
 	}
 
 	/**
@@ -274,7 +255,7 @@ Format your response EXACTLY as:
 TITLE: Your post title here (can be English or bilingual)
 CONTENT: Your post content here (MUST include both English and Chinese)`;
 
-		const maxRetries = 3;
+		const maxRetries = 5; // Increased from 3 to 5
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			const response = await this.ai.generateResponse(prompt);
 
@@ -283,7 +264,8 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 			const contentMatch = response.match(/CONTENT:\s*([\s\S]+)/);
 
 			if (!titleMatch || !contentMatch) {
-				console.error('   ❌ Failed to parse AI response');
+				console.error(`   ❌ Failed to parse AI response (attempt ${attempt + 1}/${maxRetries})`);
+				console.error(`   Response preview: ${response.slice(0, 200)}...`);
 				continue;
 			}
 
@@ -301,16 +283,23 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 				this.lastPostTime = Date.now();
 				// Add to recent posts to prevent future duplicates
 				this.recentPostTitles.add(this.normalizeTitle(title));
-				this.recentPostTitles.add(this.normalizeTitle(content.slice(0, 100)));
 				console.log(`   ✅ Created post: ${title}`);
+				console.log(`   📄 Content preview: ${content.slice(0, 100)}...`);
 				return post;
 			} catch (error) {
-				console.error('   ❌ Failed to create post:', error);
+				console.error(`   ❌ Failed to create post (attempt ${attempt + 1}/${maxRetries}):`, error);
+				// If it's a server error, retry. If it's a duplicate error from server, continue.
+				if (error instanceof Error && error.message.includes('duplicate')) {
+					console.log(`   ⚠️ Server reported duplicate, regenerating...`);
+					continue;
+				}
+				// For other errors, don't retry
 				return null;
 			}
 		}
 
-		console.error('   ❌ Failed to generate unique post after max retries');
+		console.error(`   ❌ Failed to generate unique post after ${maxRetries} retries`);
+		console.error(`   📊 Recent post titles count: ${this.recentPostTitles.size}`);
 		return null;
 	}
 
@@ -341,9 +330,21 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 			}
 
 			// Create an original post (main activity for now, comments API has issues)
+			console.log('\n🔍 Checking if can post...');
+			console.log(`   Last post time: ${this.lastPostTime === 0 ? 'Never' : new Date(this.lastPostTime).toISOString()}`);
+			console.log(`   Cooldown: ${this.POST_COOLDOWN_MS / 60000} minutes`);
+			console.log(`   Can post: ${this.canPost()}`);
+			
 			if (this.canPost()) {
-				console.log('\n');
-				await this.createOriginalPost();
+				console.log('\n📝 Attempting to create post...');
+				const post = await this.createOriginalPost();
+				if (post) {
+					console.log(`\n✅ Successfully created post!`);
+					console.log(`   ID: ${post.id}`);
+					console.log(`   URL: https://www.moltbook.com/p/${post.id}`);
+				} else {
+					console.log(`\n❌ Failed to create post (returned null)`);
+				}
 			} else {
 				const waitTime = Math.ceil(
 					(this.POST_COOLDOWN_MS - (Date.now() - this.lastPostTime)) / 60000
@@ -355,6 +356,7 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 			console.log('✅ Heartbeat complete\n');
 		} catch (error) {
 			console.error('❌ Heartbeat error:', error);
+			throw error; // Re-throw to make GitHub Actions fail visibly
 		}
 	}
 
