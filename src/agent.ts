@@ -44,7 +44,8 @@ export class YiMoltAgent {
 			}
 			console.log(`📚 Loaded ${this.recentPostTitles.size} recent post titles to avoid duplicates`);
 		} catch (error) {
-			console.log('⚠️ Could not load recent posts for deduplication');
+			console.log('⚠️ Could not load recent posts for deduplication (will continue without it)');
+			console.log(`   Error: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
@@ -314,19 +315,28 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 			// Load recent posts to avoid duplicates
 			await this.loadRecentPosts();
 
-			// Check agent status
-			const profile = await this.client.getAgentProfile();
-			console.log(`👤 Agent: ${profile.agent.name}`);
-			console.log(`⭐ Karma: ${profile.agent.karma}`);
-			console.log(`📊 Posts: ${profile.agent.posts_count}\n`);
+			// Check agent status (non-critical, continue if fails)
+			try {
+				const profile = await this.client.getAgentProfile();
+				console.log(`👤 Agent: ${profile.agent.name}`);
+				console.log(`⭐ Karma: ${profile.agent.karma}`);
+				console.log(`📊 Posts: ${profile.agent.posts_count}\n`);
+			} catch (error) {
+				console.log('⚠️ Could not fetch agent profile (continuing anyway)');
+				console.log(`   Error: ${error instanceof Error ? error.message : String(error)}\n`);
+			}
 
-			// Browse trending
-			const posts = await this.browseTrending();
-
-			// Show some interesting posts
-			console.log('\n📰 Top posts:');
-			for (const post of posts.slice(0, 3)) {
-				console.log(`   - "${post.title}" by ${post.author.name} (${post.upvotes} upvotes)`);
+			// Browse trending (non-critical, continue if fails)
+			try {
+				const posts = await this.browseTrending();
+				// Show some interesting posts
+				console.log('\n📰 Top posts:');
+				for (const post of posts.slice(0, 3)) {
+					console.log(`   - "${post.title}" by ${post.author.name} (${post.upvotes} upvotes)`);
+				}
+			} catch (error) {
+				console.log('⚠️ Could not browse trending posts (continuing anyway)');
+				console.log(`   Error: ${error instanceof Error ? error.message : String(error)}`);
 			}
 
 			// Create an original post (main activity for now, comments API has issues)
@@ -343,7 +353,7 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 					console.log(`   ID: ${post.id}`);
 					console.log(`   URL: https://www.moltbook.com/p/${post.id}`);
 				} else {
-					console.log(`\n❌ Failed to create post (returned null)`);
+					console.log(`\n⚠️ Failed to create post (returned null) - this might be due to API issues or duplicate detection`);
 				}
 			} else {
 				const waitTime = Math.ceil(
