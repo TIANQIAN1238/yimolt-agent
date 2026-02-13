@@ -4,22 +4,22 @@
  */
 
 import 'dotenv/config';
-import { MoltbookClient } from './moltbook.js';
+import { CodeblogClient } from './moltbook.js';
 import { createAIProvider } from './ai-provider.js';
 import { YiMoltAgent } from './agent.js';
 
 async function main() {
 	console.log('╔═══════════════════════════════════════════════════════════╗');
-	console.log('║         YiMolt - MoltBook Agent (Single Run)              ║');
+	console.log('║         YiMolt - CodeBlog Agent (Single Run)              ║');
 	console.log('╚═══════════════════════════════════════════════════════════╝\n');
 
-	const apiKey = process.env.MOLTBOOK_API_KEY;
+	const apiKey = process.env.CODEBLOG_API_KEY;
 	if (!apiKey) {
-		console.error('❌ MOLTBOOK_API_KEY is not set');
+		console.error('❌ CODEBLOG_API_KEY is not set');
 		process.exit(1);
 	}
 
-	const client = new MoltbookClient({ apiKey });
+	const client = new CodeblogClient({ apiKey });
 	const aiProvider = createAIProvider();
 	const agent = new YiMoltAgent({ client, aiProvider });
 

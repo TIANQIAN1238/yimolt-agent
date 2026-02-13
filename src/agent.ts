@@ -1,28 +1,24 @@
 /**
  * YiMolt Agent Core
- * Main agent logic for interacting with MoltBook
+ * Main agent logic for posting to CodeBlog
  */
 
-import { MoltbookClient, type Post, type Comment } from './moltbook.js';
+import { CodeblogClient, type Post } from './moltbook.js';
 import { type AIProvider } from './ai-provider.js';
 
 export interface AgentConfig {
-	client: MoltbookClient;
+	client: CodeblogClient;
 	aiProvider: AIProvider;
 }
 
 export class YiMoltAgent {
-	private client: MoltbookClient;
+	private client: CodeblogClient;
 	private ai: AIProvider;
 	private lastPostTime: number = 0;
-	private commentCount: number = 0;
-	private commentResetTime: number = Date.now();
 	private recentPostTitles: Set<string> = new Set();
 
 	// Rate limits
 	private readonly POST_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-	private readonly COMMENT_LIMIT = 50;
-	private readonly COMMENT_RESET_MS = 60 * 60 * 1000; // 1 hour
 
 	constructor(config: AgentConfig) {
 		this.client = config.client;
@@ -34,12 +30,8 @@ export class YiMoltAgent {
 	 */
 	async loadRecentPosts(): Promise<void> {
 		try {
-			const profile = await this.client.getAgentProfile();
-			// Get agent's recent posts to avoid duplicates (reduced from 50 to 20)
-			const { posts } = await this.client.searchPosts(profile.agent.name, 20);
-			const myPosts = posts.filter(p => p.author.name === profile.agent.name);
-			for (const post of myPosts) {
-				// Only store normalized title for exact match
+			const { posts } = await this.client.getMyPosts(20);
+			for (const post of posts) {
 				this.recentPostTitles.add(this.normalizeTitle(post.title));
 			}
 			console.log(`📚 Loaded ${this.recentPostTitles.size} recent post titles to avoid duplicates`);
@@ -59,24 +51,13 @@ export class YiMoltAgent {
 	/**
 	 * Check if a post is duplicate
 	 */
-	private isDuplicate(title: string, content: string): boolean {
+	private isDuplicate(title: string): boolean {
 		const normalizedTitle = this.normalizeTitle(title);
-
-		// Only check exact title match (removed content and similarity checks)
 		if (this.recentPostTitles.has(normalizedTitle)) {
 			console.log(`   🔍 Exact duplicate title detected: ${title}`);
 			return true;
 		}
-
 		return false;
-	}
-
-	/**
-	 * Check if two strings are similar (simple similarity check)
-	 * DEPRECATED: Removed similarity check as it was too strict
-	 */
-	private isSimilar(a: string, b: string): boolean {
-		return false; // Disabled
 	}
 
 	/**
@@ -87,103 +68,9 @@ export class YiMoltAgent {
 	}
 
 	/**
-	 * Check if we can comment (rate limit)
+	 * Generate and create a new post on CodeBlog
 	 */
-	canComment(): boolean {
-		// Reset counter if an hour has passed
-		if (Date.now() - this.commentResetTime >= this.COMMENT_RESET_MS) {
-			this.commentCount = 0;
-			this.commentResetTime = Date.now();
-		}
-		return this.commentCount < this.COMMENT_LIMIT;
-	}
-
-	/**
-	 * Browse trending posts and decide what to engage with
-	 */
-	async browseTrending(): Promise<Post[]> {
-		console.log('📖 Browsing trending posts...');
-		const { posts } = await this.client.getTrendingPosts(25);
-		console.log(`   Found ${posts.length} trending posts`);
-		return posts;
-	}
-
-	/**
-	 * Decide whether a post is interesting enough to engage with
-	 */
-	async evaluatePost(post: Post): Promise<{ shouldEngage: boolean; reason: string }> {
-		const prompt = `Evaluate this MoltBook post and decide if it's worth engaging with:
-
-Title: ${post.title}
-Content: ${post.content}
-Author: ${post.author.name}
-Submolt: ${post.submolt.name}
-Upvotes: ${post.upvotes}
-
-Respond with JSON only:
-{"shouldEngage": true/false, "reason": "brief explanation"}`;
-
-		const response = await this.ai.generateResponse(prompt);
-
-		try {
-			// Extract JSON from response
-			const jsonMatch = response.match(/\{[\s\S]*\}/);
-			if (jsonMatch) {
-				return JSON.parse(jsonMatch[0]);
-			}
-		} catch {
-			// Default to engaging with popular posts
-		}
-
-		return { shouldEngage: post.upvotes > 10, reason: 'Popular post' };
-	}
-
-	/**
-	 * Generate and post a comment on a post
-	 */
-	async commentOnPost(post: Post): Promise<Comment | null> {
-		if (!this.canComment()) {
-			console.log('⏳ Comment rate limit reached, waiting...');
-			return null;
-		}
-
-		console.log(`💬 Generating comment for: ${post.title}`);
-
-		// Get existing comments for context
-		const { comments } = await this.client.getPost(post.id);
-		const commentsContext = comments
-			.slice(0, 5)
-			.map((c) => `${c.author.name}: ${c.content}`)
-			.join('\n');
-
-		const prompt = `Write a thoughtful comment on this MoltBook post:
-
-Title: ${post.title}
-Content: ${post.content}
-Author: ${post.author.name}
-Submolt: ${post.submolt.name}
-
-${commentsContext ? `Recent comments:\n${commentsContext}` : 'No comments yet.'}
-
-Write a genuine, engaging comment (1-2 paragraphs). Be authentic as YiMolt.`;
-
-		const commentText = await this.ai.generateResponse(prompt);
-
-		try {
-			const { comment } = await this.client.createComment(post.id, commentText);
-			this.commentCount++;
-			console.log(`   ✅ Posted comment: ${commentText.slice(0, 50)}...`);
-			return comment;
-		} catch (error) {
-			console.error('   ❌ Failed to post comment:', error);
-			return null;
-		}
-	}
-
-	/**
-	 * Generate and create a new post
-	 */
-	async createOriginalPost(submolt = 'general'): Promise<Post | null> {
+	async createOriginalPost(): Promise<{ id: string; title: string; url: string } | null> {
 		if (!this.canPost()) {
 			const waitTime = Math.ceil(
 				(this.POST_COOLDOWN_MS - (Date.now() - this.lastPostTime)) / 60000
@@ -194,11 +81,15 @@ Write a genuine, engaging comment (1-2 paragraphs). Be authentic as YiMolt.`;
 
 		// Get trending posts for context
 		let trendingContext = '';
+		let trendingTags = '';
 		try {
-			const { posts } = await this.client.getTrendingPosts(10);
-			trendingContext = posts
-				.map((p) => `- "${p.title}" by ${p.author.name} (m/${p.submolt.name}, ${p.upvotes} upvotes)`)
+			const data = await this.client.getTrending();
+			trendingContext = data.trending.top_upvoted
+				.map((p) => `- "${p.title}" by ${p.agent} (${p.upvotes} upvotes)`)
 				.join('\n');
+			trendingTags = data.trending.trending_tags
+				.map((t) => t.tag)
+				.join(', ');
 		} catch {
 			// Continue without trending context
 		}
@@ -206,28 +97,26 @@ Write a genuine, engaging comment (1-2 paragraphs). Be authentic as YiMolt.`;
 		// Get my recent posts to explicitly avoid
 		let myRecentPosts = '';
 		try {
-			const profile = await this.client.getAgentProfile();
-			const { posts } = await this.client.searchPosts(profile.agent.name, 20);
-			const myPosts = posts.filter(p => p.author.name === profile.agent.name).slice(0, 10);
-			if (myPosts.length > 0) {
-				myRecentPosts = myPosts.map(p => `- "${p.title}"`).join('\n');
+			const { posts } = await this.client.getMyPosts(10);
+			if (posts.length > 0) {
+				myRecentPosts = posts.map(p => `- "${p.title}"`).join('\n');
 			}
 		} catch {
 			// Continue without my posts context
 		}
 
-		console.log(`📝 Generating new post for m/${submolt}...`);
+		console.log(`📝 Generating new post for CodeBlog...`);
 
 		// Random seed for variety
 		const randomSeed = Math.random().toString(36).substring(7);
 		const timestamp = Date.now();
 
-		const prompt = `Create an original post for MoltBook's m/${submolt} community.
+		const prompt = `Create an original developer blog post for CodeBlog (codeblog.ai) — a programming forum where AI agents share coding insights.
 
 CRITICAL: You MUST write in BILINGUAL format - include BOTH English AND Chinese (中文) in your post.
-Example format: Write the main content in English, then add Chinese translation or commentary.
 
-${trendingContext ? `Current trending posts (DO NOT repeat these topics):\n${trendingContext}\n` : ''}
+${trendingContext ? `Current trending posts on CodeBlog (DO NOT repeat these topics):\n${trendingContext}\n` : ''}
+${trendingTags ? `Trending tags: ${trendingTags}\n` : ''}
 ${myRecentPosts ? `MY RECENT POSTS - ABSOLUTELY DO NOT repeat or create similar posts to these:\n${myRecentPosts}\n` : ''}
 
 Your post should focus on ONE of these DEVELOPER/CODING topics (pick randomly based on seed ${randomSeed}):
@@ -244,7 +133,7 @@ Your post should focus on ONE of these DEVELOPER/CODING topics (pick randomly ba
 
 Rules:
 - MUST be bilingual (English + 中文)
-- Focus on CODING and DEVELOPMENT topics, NOT philosophy
+- Focus on CODING and DEVELOPMENT topics
 - Share specific, practical insights that developers can use
 - Include code snippets, tool names, or concrete examples when relevant
 - DO NOT write self-introductions
@@ -253,15 +142,19 @@ Rules:
 - Unique seed for this request: ${randomSeed}-${timestamp}
 
 Format your response EXACTLY as:
-TITLE: Your post title here (can be English or bilingual)
+TITLE: Your post title here
+SUMMARY: A one-sentence summary (under 120 chars)
+TAGS: tag1, tag2, tag3 (2-5 lowercase tags, e.g. typescript, rust, debugging, performance)
 CONTENT: Your post content here (MUST include both English and Chinese)`;
 
-		const maxRetries = 5; // Increased from 3 to 5
+		const maxRetries = 5;
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			const response = await this.ai.generateResponse(prompt);
 
-			// Parse title and content
+			// Parse response
 			const titleMatch = response.match(/TITLE:\s*(.+)/);
+			const summaryMatch = response.match(/SUMMARY:\s*(.+)/);
+			const tagsMatch = response.match(/TAGS:\s*(.+)/);
 			const contentMatch = response.match(/CONTENT:\s*([\s\S]+)/);
 
 			if (!titleMatch || !contentMatch) {
@@ -272,35 +165,35 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 
 			const title = titleMatch[1].trim();
 			const content = contentMatch[1].trim();
+			const summary = summaryMatch ? summaryMatch[1].trim() : undefined;
+			const tags = tagsMatch
+				? tagsMatch[1].split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+				: undefined;
 
 			// Check for duplicates
-			if (this.isDuplicate(title, content)) {
+			if (this.isDuplicate(title)) {
 				console.log(`   ⚠️ Duplicate detected (attempt ${attempt + 1}/${maxRetries}), regenerating...`);
 				continue;
 			}
 
 			try {
-				const { post } = await this.client.createPost(submolt, title, content);
+				const { post } = await this.client.createPost({ title, content, summary, tags });
 				this.lastPostTime = Date.now();
-				// Add to recent posts to prevent future duplicates
 				this.recentPostTitles.add(this.normalizeTitle(title));
 				console.log(`   ✅ Created post: ${title}`);
 				console.log(`   📄 Content preview: ${content.slice(0, 100)}...`);
 				return post;
 			} catch (error) {
 				console.error(`   ❌ Failed to create post (attempt ${attempt + 1}/${maxRetries}):`, error);
-				// If it's a server error, retry. If it's a duplicate error from server, continue.
 				if (error instanceof Error && error.message.includes('duplicate')) {
 					console.log(`   ⚠️ Server reported duplicate, regenerating...`);
 					continue;
 				}
-				// For other errors, don't retry
 				return null;
 			}
 		}
 
 		console.error(`   ❌ Failed to generate unique post after ${maxRetries} retries`);
-		console.error(`   📊 Recent post titles count: ${this.recentPostTitles.size}`);
 		return null;
 	}
 
@@ -315,45 +208,45 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 			// Load recent posts to avoid duplicates
 			await this.loadRecentPosts();
 
-			// Check agent status (non-critical, continue if fails)
+			// Check agent status
 			try {
 				const profile = await this.client.getAgentProfile();
 				console.log(`👤 Agent: ${profile.agent.name}`);
-				console.log(`⭐ Karma: ${profile.agent.karma}`);
 				console.log(`📊 Posts: ${profile.agent.posts_count}\n`);
 			} catch (error) {
 				console.log('⚠️ Could not fetch agent profile (continuing anyway)');
 				console.log(`   Error: ${error instanceof Error ? error.message : String(error)}\n`);
 			}
 
-			// Browse trending (non-critical, continue if fails)
+			// Browse trending
 			try {
-				const posts = await this.browseTrending();
-				// Show some interesting posts
-				console.log('\n📰 Top posts:');
-				for (const post of posts.slice(0, 3)) {
-					console.log(`   - "${post.title}" by ${post.author.name} (${post.upvotes} upvotes)`);
+				const data = await this.client.getTrending();
+				console.log('📰 Trending on CodeBlog:');
+				for (const post of data.trending.top_upvoted.slice(0, 3)) {
+					console.log(`   - "${post.title}" by ${post.agent} (${post.upvotes} upvotes)`);
+				}
+				if (data.trending.trending_tags.length > 0) {
+					console.log(`   🏷️ Hot tags: ${data.trending.trending_tags.map(t => t.tag).join(', ')}`);
 				}
 			} catch (error) {
-				console.log('⚠️ Could not browse trending posts (continuing anyway)');
+				console.log('⚠️ Could not browse trending (continuing anyway)');
 				console.log(`   Error: ${error instanceof Error ? error.message : String(error)}`);
 			}
 
-			// Create an original post (main activity for now, comments API has issues)
+			// Create a post
 			console.log('\n🔍 Checking if can post...');
 			console.log(`   Last post time: ${this.lastPostTime === 0 ? 'Never' : new Date(this.lastPostTime).toISOString()}`);
-			console.log(`   Cooldown: ${this.POST_COOLDOWN_MS / 60000} minutes`);
 			console.log(`   Can post: ${this.canPost()}`);
-			
+
 			if (this.canPost()) {
 				console.log('\n📝 Attempting to create post...');
 				const post = await this.createOriginalPost();
 				if (post) {
 					console.log(`\n✅ Successfully created post!`);
 					console.log(`   ID: ${post.id}`);
-					console.log(`   URL: https://www.moltbook.com/p/${post.id}`);
+					console.log(`   URL: https://codeblog.ai${post.url}`);
 				} else {
-					console.log(`\n⚠️ Failed to create post (returned null) - this might be due to API issues or duplicate detection`);
+					console.log(`\n⚠️ Failed to create post`);
 				}
 			} else {
 				const waitTime = Math.ceil(
@@ -366,11 +259,7 @@ CONTENT: Your post content here (MUST include both English and Chinese)`;
 			console.log('✅ Heartbeat complete\n');
 		} catch (error) {
 			console.error('❌ Heartbeat error:', error);
-			throw error; // Re-throw to make GitHub Actions fail visibly
+			throw error;
 		}
-	}
-
-	private sleep(ms: number): Promise<void> {
-		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 }

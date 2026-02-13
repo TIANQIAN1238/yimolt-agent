@@ -1,7 +1,7 @@
 {
   "name": "yimolt-agent",
   "version": "1.0.0",
-  "description": "YiMolt - An AI agent for MoltBook social network",
+  "description": "YiMolt - An AI agent for CodeBlog (codeblog.ai)",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -12,9 +12,9 @@
     "heartbeat": "tsx src/heartbeat.ts"
   },
   "keywords": [
-    "moltbook",
+    "codeblog",
     "ai-agent",
-    "social-network"
+    "developer-blog"
   ],
   "author": "zhaoyifei",
   "license": "MIT",

@@ -1,11 +1,11 @@
 /**
- * MoltBook API Client
- * Official API wrapper for interacting with MoltBook social network
+ * CodeBlog API Client
+ * API wrapper for interacting with CodeBlog (codeblog.ai)
  */
 
 import https from 'node:https';
 
-const MOLTBOOK_BASE_URL = process.env.MOLTBOOK_BASE_URL || 'https://www.moltbook.com/api/v1';
+const CODEBLOG_BASE_URL = process.env.CODEBLOG_BASE_URL || 'https://codeblog.ai/api/v1';
 
 /**
  * HTTP request using native https module with retry
@@ -65,54 +65,70 @@ function httpsRequest(
 	});
 }
 
-export interface MoltbookConfig {
+export interface CodeblogConfig {
 	apiKey: string;
 	baseUrl?: string;
 }
 
-export interface RegisterResponse {
-	agent: {
-		api_key: string;
-		claim_url: string;
-		verification_code: string;
-	};
-	important: string;
-}
-
 export interface Post {
 	id: string;
-	author: { id: string; name: string };
 	title: string;
 	content: string;
-	submolt: { id: string; name: string; display_name: string };
+	summary?: string;
+	tags: string[];
 	upvotes: number;
 	downvotes: number;
 	comment_count: number;
-	created_at: string;
-}
-
-export interface Comment {
-	id: string;
-	post_id: string;
 	author: { id: string; name: string };
-	content: string;
-	upvotes: number;
 	created_at: string;
 }
 
-export interface Submolt {
-	name: string;
-	description: string;
-	members_count: number;
+export interface TrendingData {
+	trending: {
+		top_upvoted: Array<{
+			id: string;
+			title: string;
+			upvotes: number;
+			downvotes: number;
+			views: number;
+			comments: number;
+			agent: string;
+			created_at: string;
+		}>;
+		top_commented: Array<{
+			id: string;
+			title: string;
+			upvotes: number;
+			views: number;
+			comments: number;
+			agent: string;
+			created_at: string;
+		}>;
+		top_agents: Array<{
+			id: string;
+			name: string;
+			source_type: string;
+			posts: number;
+		}>;
+		trending_tags: Array<{ tag: string; count: number }>;
+	};
 }
 
-export class MoltbookClient {
+export interface CreatePostParams {
+	title: string;
+	content: string;
+	summary?: string;
+	tags?: string[];
+	category?: string;
+}
+
+export class CodeblogClient {
 	private apiKey: string;
 	private baseUrl: string;
 
-	constructor(config: MoltbookConfig) {
+	constructor(config: CodeblogConfig) {
 		this.apiKey = config.apiKey;
-		this.baseUrl = config.baseUrl || MOLTBOOK_BASE_URL;
+		this.baseUrl = config.baseUrl || CODEBLOG_BASE_URL;
 	}
 
 	private async request<T>(endpoint: string, options: { method?: string; body?: string } = {}): Promise<T> {
@@ -133,118 +149,49 @@ export class MoltbookClient {
 		});
 
 		if (result.status >= 400) {
-			throw new Error(`MoltBook API Error [${result.status}]: ${result.body}`);
+			throw new Error(`CodeBlog API Error [${result.status}]: ${result.body}`);
 		}
 
 		return JSON.parse(result.body) as T;
 	}
 
 	/**
-	 * Register a new agent on MoltBook
+	 * Get trending content (public)
 	 */
-	static async register(name: string, description: string): Promise<RegisterResponse> {
-		const result = await httpsRequest(`${MOLTBOOK_BASE_URL}/agents/register`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name, description }),
-		});
-
-		if (result.status >= 400) {
-			throw new Error(`Registration failed: ${result.body}`);
-		}
-
-		return JSON.parse(result.body) as RegisterResponse;
+	async getTrending(): Promise<TrendingData> {
+		return this.request('/trending');
 	}
 
 	/**
-	 * Verify agent ownership via Twitter claim
+	 * Get posts (latest, with optional tag filter)
 	 */
-	async verifyClaim(claimToken: string): Promise<{ verified: boolean }> {
-		return this.request('/agents/verify', {
-			method: 'POST',
-			body: JSON.stringify({ claim_token: claimToken }),
-		});
-	}
-
-	/**
-	 * Get posts (trending)
-	 */
-	async getTrendingPosts(limit = 25): Promise<{ posts: Post[] }> {
-		return this.request(`/posts?limit=${limit}`);
-	}
-
-	/**
-	 * Get posts from a specific submolt
-	 */
-	async getSubmoltPosts(submolt: string, limit = 25): Promise<{ posts: Post[] }> {
-		return this.request(`/submolts/${submolt}/posts?limit=${limit}`);
-	}
-
-	/**
-	 * Get a specific post with comments
-	 */
-	async getPost(postId: string): Promise<{ post: Post; comments: Comment[] }> {
-		return this.request(`/posts/${postId}`);
+	async getPosts(limit = 25, page = 1, tag?: string): Promise<{ posts: Post[] }> {
+		let endpoint = `/posts?limit=${limit}&page=${page}`;
+		if (tag) endpoint += `&tag=${encodeURIComponent(tag)}`;
+		return this.request(endpoint);
 	}
 
 	/**
 	 * Create a new post
 	 */
-	async createPost(submolt: string, title: string, content: string): Promise<{ post: Post }> {
+	async createPost(params: CreatePostParams): Promise<{ post: { id: string; title: string; url: string; created_at: string } }> {
 		return this.request('/posts', {
 			method: 'POST',
-			body: JSON.stringify({ submolt, title, content }),
+			body: JSON.stringify(params),
 		});
-	}
-
-	/**
-	 * Comment on a post
-	 */
-	async createComment(postId: string, content: string): Promise<{ comment: Comment }> {
-		return this.request(`/posts/${postId}/comments`, {
-			method: 'POST',
-			body: JSON.stringify({ content }),
-		});
-	}
-
-	/**
-	 * Upvote a post
-	 */
-	async upvotePost(postId: string): Promise<{ success: boolean }> {
-		return this.request(`/posts/${postId}/vote`, {
-			method: 'POST',
-			body: JSON.stringify({ direction: 'up' }),
-		});
-	}
-
-	/**
-	 * Downvote a post
-	 */
-	async downvotePost(postId: string): Promise<{ success: boolean }> {
-		return this.request(`/posts/${postId}/vote`, {
-			method: 'POST',
-			body: JSON.stringify({ direction: 'down' }),
-		});
-	}
-
-	/**
-	 * Search posts semantically
-	 */
-	async searchPosts(query: string, limit = 10): Promise<{ posts: Post[] }> {
-		return this.request(`/search?q=${encodeURIComponent(query)}&limit=${limit}`);
-	}
-
-	/**
-	 * Get list of submolts
-	 */
-	async getSubmolts(): Promise<{ submolts: Submolt[] }> {
-		return this.request('/submolts');
 	}
 
 	/**
 	 * Get agent profile
 	 */
-	async getAgentProfile(): Promise<{ agent: { name: string; karma: number; posts_count: number } }> {
+	async getAgentProfile(): Promise<{ agent: { id: string; name: string; posts_count: number } }> {
 		return this.request('/agents/me');
+	}
+
+	/**
+	 * Get agent's own posts
+	 */
+	async getMyPosts(limit = 20): Promise<{ posts: Post[] }> {
+		return this.request(`/agents/me/posts?limit=${limit}`);
 	}
 }
